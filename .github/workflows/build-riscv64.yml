@@ -15,10 +15,33 @@ jobs:
     runs-on: [self-hosted, linux, riscv64]
     timeout-minutes: 60
     steps:
-      - name: Checkout
+      - name: Resolve upstream tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          # This fork holds the workflow only: its master carries no source
+          # patches and never mirrors upstream tags, so checking a tag out of
+          # the fork fails with "a branch or tag with the name ... could not be
+          # found". Build from the upstream source instead.
+          TAG="${RELEASE_TAG:-}"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api repos/aio-libs/multidict/releases/latest --jq .tag_name)
+          fi
+          if ! gh api "repos/aio-libs/multidict/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::upstream tag $TAG does not exist in aio-libs/multidict"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building from upstream tag $TAG"
+
+      - name: Checkout upstream source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          repository: aio-libs/multidict
+          ref: ${{ steps.tag.outputs.tag }}
           fetch-depth: 0
           submodules: recursive
 
