@@ -14,19 +14,52 @@ jobs:
   build:
     runs-on: [self-hosted, linux, riscv64]
     timeout-minutes: 60
+    outputs:
+      upstream_tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - name: Checkout
+      - name: Resolve upstream tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          # This fork holds the workflow only: its master carries no source
+          # patches and never mirrors upstream tags, so checking a tag out of
+          # the fork fails with "a branch or tag with the name ... could not be
+          # found". Build from the upstream source instead.
+          TAG="${RELEASE_TAG:-}"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api repos/aio-libs/multidict/releases/latest --jq .tag_name)
+          fi
+          if ! gh api "repos/aio-libs/multidict/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::upstream tag $TAG does not exist in aio-libs/multidict"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building from upstream tag $TAG"
+
+      - name: Checkout upstream source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          repository: aio-libs/multidict
+          ref: ${{ steps.tag.outputs.tag }}
           fetch-depth: 0
           submodules: recursive
+          # The build runs upstream's build backend over this tree, so do not
+          # leave the token readable in .git/config. Nothing later in this job
+          # runs git. The release job's checkout keeps its credentials: it
+          # pushes a tag deletion.
+          persist-credentials: false
 
       - name: Set up Python
         run: |
           python3 -m venv /tmp/build-venv
           . /tmp/build-venv/bin/activate
-          pip install --upgrade pip 'setuptools>=77,<81' wheel cython
+          # No cython: multidict ships hand-written C, its build-system
+          # requires only setuptools, and PyPI has no riscv64 Cython wheel,
+          # so installing it means a pointless source build on the board.
+          pip install --upgrade pip 'setuptools>=77,<81' wheel
 
       - name: Build wheel
         run: |
@@ -60,6 +93,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: success()
+    outputs:
+      release_tag: ${{ steps.wheel_info.outputs.release_tag }}
     env:
       GH_REPO: ${{ github.repository }}
     steps:
@@ -81,6 +116,7 @@ jobs:
           echo "whl_path=$WHL" >> "$GITHUB_OUTPUT"
           echo "whl_name=$BASENAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=riscv64-v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate checksums
         run: |
@@ -100,6 +136,7 @@ jobs:
             --title "$TITLE" \
             --notes "Prebuilt riscv64 wheel for multidict.
 
+          Upstream source: aio-libs/multidict ${{ needs.build.outputs.upstream_tag }}
           Built on: BananaPi F3 (SpacemiT K1, rv64imafdcv)
           Python: built on riscv64 self-hosted runner
           Wheel: ${{ steps.wheel_info.outputs.whl_name }}
@@ -127,4 +164,4 @@ jobs:
           gh api repos/gounthar/riscv64-python-wheels/dispatches \
             -f event_type=fork-release-published \
             -f "client_payload[repo]=${{ github.repository }}" \
-            -f "client_payload[tag]=${{ github.ref_name }}"
+            -f "client_payload[tag]=${{ needs.release.outputs.release_tag }}"
