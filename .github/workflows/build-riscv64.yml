@@ -44,6 +44,11 @@ jobs:
           ref: ${{ steps.tag.outputs.tag }}
           fetch-depth: 0
           submodules: recursive
+          # The build runs upstream's build backend over this tree, so do not
+          # leave the token readable in .git/config. Nothing later in this job
+          # runs git. The release job's checkout keeps its credentials: it
+          # pushes a tag deletion.
+          persist-credentials: false
 
       - name: Set up Python
         run: |
